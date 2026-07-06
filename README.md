@@ -42,7 +42,8 @@ docs/
 - `canal/adapter-conf/` — application.yml + mapping .yml
 
 ## Tài liệu
-- **Bắt đầu ở đây:** [docs/panel-cli-guide.md](docs/panel-cli-guide.md) — mọi lệnh, quy trình, bug đã fix.
+- **Hướng dẫn từng bước (đã kiểm chứng):** [docs/huong-dan-test-local-va-vps.md](docs/huong-dan-test-local-va-vps.md) — test local + chạy thật VPS qua ngrok.
+- **Tra cứu lệnh:** [docs/panel-cli-guide.md](docs/panel-cli-guide.md) — mọi lệnh, quy trình, bug đã fix.
 
 ## Test local (không có DB game thật)
 Dựng thêm MySQL 5.5 giả làm nguồn:
