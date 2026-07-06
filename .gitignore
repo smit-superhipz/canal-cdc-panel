@@ -7,9 +7,12 @@
 *.sql
 # trừ schema công khai (không có data thật)
 !canal-admin/canal_manager.sql
-!init/mysql55/01-schema.sql
 !init/mysql80/01-schema.sql
 !canal/base-conf/spring/tsdb/sql/create_table.sql
+
+# === CHỈ để test local — KHÔNG push ===
+docker-compose.lab.yml
+init/mysql55/
 
 # === SINH RA bởi panel (panel init/new tự tạo lại) ===
 canal/server-conf/
