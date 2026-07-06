@@ -75,6 +75,16 @@ cmd_new(){
   read -rsp "  password: " SRC_PASS; echo
   read -rp "  database nguồn: " SRC_DB
 
+  # kiểm tra kết nối nguồn TRƯỚC (báo lỗi rõ, không để set -e giết câm)
+  info "kiểm tra kết nối nguồn $SRC_HOST:$SRC_PORT ..."
+  local perr; perr=$(docker exec "$DST_CONTAINER" mysql -h"$SRC_HOST" -P"$SRC_PORT" -u"$SRC_USER" -p"$SRC_PASS" -e "SELECT 1;" 2>&1 >/dev/null | grep -iv "Using a password") || true
+  if [ -n "$perr" ]; then
+    echo "${R}✗ không kết nối được nguồn:${N}" >&2; echo "  $perr" >&2
+    echo "${Y}Gợi ý:${N} kiểm tra host/port ngrok còn sống? user '$SRC_USER' đã tạo trên nguồn chưa? (MySQL 5.5 dùng: GRANT ... TO '$SRC_USER'@'%' IDENTIFIED BY '...')" >&2
+    die "sửa xong chạy lại ./panel new"
+  fi
+  ok "kết nối nguồn OK"
+
   # tự nhận charset nguồn (utf8mb4/latin1) -> tránh vỡ tiếng Việt
   local SRC_CHARSET; SRC_CHARSET=$(mysqlq "$SRC_HOST" "$SRC_PORT" "$SRC_USER" "$SRC_PASS" "" \
     "SELECT DEFAULT_CHARACTER_SET_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='$SRC_DB';")
