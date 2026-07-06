@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+# =============================================================
+# panel — CLI quản lý CDC Canal đa nguồn (đã kiểm chứng thực tế)
+#
+# Triết lý: "nguồn sự thật" = .panel/servers/<name>.conf
+#   Từ đó SINH LẠI: server-conf/<name>/instance.properties + adapter-conf/rdb/*.yml
+#                   + cập nhật canal.destinations trong server-conf/canal.properties
+#                   + block trong adapter-conf/application.yml
+#
+# Cấu trúc (panel quản lý, compose mount cố định — thêm nguồn KHÔNG sửa compose):
+#   canal/server-conf/     -> mount vào canal-server /conf   (canal.properties + mỗi nguồn 1 thư mục)
+#   canal/adapter-conf/    -> mount vào canal-adapter /conf  (application.yml + rdb/*.yml)
+#
+# Bài học đã fix qua test thật:
+#   - mỗi instance PHẢI có canal.instance.tsdb.enable=false (không thì GetConnectionTimeout)
+#   - thêm nguồn: recreate CẢ server LẪN adapter (không thì adapter Broken pipe)
+#   - slaveId mỗi nguồn phải khác nhau
+#
+# Lệnh: init | new | status | up | down | etl <name> | logs [name] | list | rm <name>
+# =============================================================
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REG_DIR="$ROOT/.panel/servers"
+BASE_CONF="$ROOT/canal/base-conf"           # conf gốc Canal (đẩy GitHub) — panel init copy sang server-conf
+SRV_CONF="$ROOT/canal/server-conf"          # mount -> canal-server /conf (sinh ra, .gitignore)
+ADP_CONF="$ROOT/canal/adapter-conf"         # application.yml + rdb/ (sinh ra, .gitignore)
+COMPOSE="$ROOT/docker-compose.yml"
+DST_CONTAINER="lab-mysql80"                 # container MySQL 8.0 (đích) + làm "máy trạm" mysql client
+DST_ROOT_PASS="root"
+# Host adapter dùng để gọi canal-server và MySQL đích (lab: tên service; VPS host-mode: 127.0.0.1)
+CANAL_SERVER_HOST="${CANAL_SERVER_HOST:-canal-server:11111}"
+DST_JDBC_HOST="${DST_JDBC_HOST:-mysql80:3306}"
+
+R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; B=$'\e[36m'; N=$'\e[0m'
+ok(){   echo "${G}✓${N} $*"; }
+info(){ echo "${B}ℹ${N} $*"; }
+warn(){ echo "${Y}!${N} $*"; }
+die(){  echo "${R}✗ $*${N}" >&2; exit 1; }
+
+# mysql client qua container đích (không cần cài mysql trên host)
+mysqlq(){ local h="$1" p="$2" u="$3" pw="$4" db="$5" sql="$6"
+  docker exec "$DST_CONTAINER" mysql -h"$h" -P"$p" -u"$u" -p"$pw" ${db:+"$db"} -sN -e "$sql" 2>/dev/null; }
+
+# ---------------------------------------------------------------
+cmd_init(){
+  info "== panel init =="
+  command -v docker >/dev/null 2>&1 && ok "docker OK" || { curl -fsSL https://get.docker.com | sh || die "cài docker lỗi"; }
+  docker compose version >/dev/null 2>&1 || die "thiếu docker compose plugin"
+  mkdir -p "$REG_DIR" "$ADP_CONF/rdb"
+  # copy conf gốc (base-conf) sang server-conf lần đầu (server-conf nằm trong .gitignore)
+  [ -d "$BASE_CONF" ] || die "thiếu $BASE_CONF (conf gốc Canal) — repo lỗi?"
+  if [ ! -f "$SRV_CONF/canal.properties" ]; then
+    mkdir -p "$SRV_CONF"; cp -r "$BASE_CONF"/. "$SRV_CONF"/
+    ok "đã copy conf gốc → server-conf"
+  else
+    ok "server-conf đã có (giữ nguyên)"
+  fi
+  [ -f "$ADP_CONF/application.yml" ] || _regen_application_yml
+  ok "cấu trúc sẵn sàng. Tiếp: ./panel up  rồi  ./panel new"
+}
+
+# ---------------------------------------------------------------
+cmd_new(){
+  info "== panel new: thêm 1 nguồn CDC =="
+  mkdir -p "$REG_DIR"
+  read -rp "Tên server (vd s1, s2, s3): " NAME
+  [ -n "$NAME" ] || die "tên rỗng"; [ -f "$REG_DIR/$NAME.conf" ] && die "'$NAME' đã tồn tại"
+
+  echo "--- Nguồn (MySQL game) ---"
+  read -rp "  host [mysql55]: " SRC_HOST; SRC_HOST=${SRC_HOST:-mysql55}
+  read -rp "  port [3306]: " SRC_PORT; SRC_PORT=${SRC_PORT:-3306}
+  read -rp "  user [cdc]: " SRC_USER; SRC_USER=${SRC_USER:-cdc}
+  read -rsp "  password: " SRC_PASS; echo
+  read -rp "  database nguồn: " SRC_DB
+
+  # tự nhận charset nguồn (utf8mb4/latin1) -> tránh vỡ tiếng Việt
+  local SRC_CHARSET; SRC_CHARSET=$(mysqlq "$SRC_HOST" "$SRC_PORT" "$SRC_USER" "$SRC_PASS" "" \
+    "SELECT DEFAULT_CHARACTER_SET_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='$SRC_DB';")
+  SRC_CHARSET=${SRC_CHARSET:-utf8mb4}
+  local CANAL_CS JDBC_CS
+  case "$SRC_CHARSET" in latin1) CANAL_CS="ISO-8859-1"; JDBC_CS="latin1";; *) CANAL_CS="UTF-8"; JDBC_CS="utf8";; esac
+  info "charset nguồn: $SRC_CHARSET → Canal=$CANAL_CS, JDBC=$JDBC_CS"
+
+  echo "--- Đích (MySQL 8.0) ---"
+  local DEF="${SRC_DB}_${NAME}"; read -rp "  database đích [$DEF]: " DST_DB; DST_DB=${DST_DB:-$DEF}
+
+  local SLAVE_ID=$(( 1234 + $(ls -1 "$REG_DIR"/*.conf 2>/dev/null | wc -l | tr -d ' ') ))
+
+  info "lấy danh sách bảng (chỉ bảng có khóa chính)..."
+  local tbls; tbls=$(mysqlq "$SRC_HOST" "$SRC_PORT" "$SRC_USER" "$SRC_PASS" "" \
+    "SELECT t.TABLE_NAME FROM information_schema.TABLES t
+     JOIN information_schema.TABLE_CONSTRAINTS c ON t.TABLE_SCHEMA=c.TABLE_SCHEMA AND t.TABLE_NAME=c.TABLE_NAME AND c.CONSTRAINT_TYPE='PRIMARY KEY'
+     WHERE t.TABLE_SCHEMA='$SRC_DB' AND t.TABLE_TYPE='BASE TABLE' ORDER BY t.TABLE_NAME;") || die "không kết nối được nguồn"
+  [ -n "$tbls" ] || die "nguồn không có bảng có khóa chính"
+
+  echo "--- Chọn bảng (đánh số) ---"
+  local arr=(); local i=1
+  while IFS= read -r t; do arr+=("$t"); printf "  %3d) %s\n" "$i" "$t"; i=$((i+1)); done <<< "$tbls"
+  read -rp "Nhập số (vd 1,3,5) hoặc 'all': " PICK
+  local chosen=()
+  if [ "$PICK" = "all" ]; then chosen=("${arr[@]}")
+  else IFS=',' read -ra nums <<< "$PICK"
+    for n in "${nums[@]}"; do n=$(echo "$n"|tr -d ' '); [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le "${#arr[@]}" ] && chosen+=("${arr[$((n-1))]}"); done
+  fi
+  [ "${#chosen[@]}" -gt 0 ] || die "chưa chọn bảng"
+  info "đã chọn ${#chosen[@]} bảng: ${chosen[*]}"
+
+  # khóa chính từng bảng
+  local pklines=""
+  for t in "${chosen[@]}"; do
+    local pk; pk=$(mysqlq "$SRC_HOST" "$SRC_PORT" "$SRC_USER" "$SRC_PASS" "" \
+      "SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA='$SRC_DB' AND TABLE_NAME='$t' AND CONSTRAINT_NAME='PRIMARY' ORDER BY ORDINAL_POSITION LIMIT 1;")
+    pklines="${pklines}PK_${t}=${pk:-id}"$'\n'
+  done
+
+  { echo "NAME=$NAME"; echo "SRC_HOST=$SRC_HOST"; echo "SRC_PORT=$SRC_PORT"
+    echo "SRC_USER=$SRC_USER"; echo "SRC_PASS=$SRC_PASS"; echo "SRC_DB=$SRC_DB"
+    echo "DST_DB=$DST_DB"; echo "SLAVE_ID=$SLAVE_ID"
+    echo "SRC_CHARSET=$SRC_CHARSET"; echo "CANAL_CS=$CANAL_CS"; echo "JDBC_CS=$JDBC_CS"
+    echo "TABLES=\"${chosen[*]}\""; printf "%s" "$pklines"
+  } > "$REG_DIR/$NAME.conf"
+  ok "đăng ký: .panel/servers/$NAME.conf"
+
+  _gen_instance "$NAME"; _gen_mappings "$NAME"; _regen_destinations; _regen_application_yml
+  ok "đã sinh config canal cho '$NAME'"
+  docker exec "$DST_CONTAINER" mysql -uroot -p"$DST_ROOT_PASS" -e "CREATE DATABASE IF NOT EXISTS \`$DST_DB\` DEFAULT CHARSET=$SRC_CHARSET;" 2>/dev/null
+  ok "database đích '$DST_DB' sẵn sàng"
+  echo
+  warn "BƯỚC TIẾP:"
+  echo "  1) Tạo cấu trúc bảng ở đích '$DST_DB' (dump --no-data từ nguồn rồi nạp)"
+  echo "  2) ./panel up            (recreate cả server+adapter — nạp nguồn mới)"
+  echo "  3) ./panel etl $NAME      (nạp data cũ)"
+}
+
+# ---------------------------------------------------------------
+cmd_up(){ (cd "$ROOT" && docker compose up -d --force-recreate canal-server canal-adapter) && ok "đã (re)khởi động server+adapter"; }
+cmd_down(){ (cd "$ROOT" && docker compose down) && ok "đã tắt"; }
+cmd_status(){ "$ROOT/canal-healthcheck.sh"; }
+
+cmd_etl(){
+  local name="${1:-}"; [ -n "$name" ] || die "cú pháp: ./panel etl <name>"
+  [ -f "$REG_DIR/$name.conf" ] || die "không có '$name'"; source "$REG_DIR/$name.conf"
+  info "ETL nạp data cũ cho '$name' (key=$name)..."
+  # tên file mapping = <name>_<table>.yml (khớp _gen_mappings)
+  for t in $TABLES; do echo "  $t -> $(curl -s -X POST "http://127.0.0.1:8081/etl/rdb/$name/${name}_${t}.yml" 2>/dev/null)"; done
+}
+
+cmd_logs(){
+  local name="${1:-}"
+  info "canal-server${name:+ (instance $name)}:"; docker exec lab-canal-server sh -c "tail -12 /home/admin/canal-server/logs/${name:-canal}/${name:-canal}.log 2>/dev/null" 2>/dev/null
+  echo "---"; info "canal-adapter (DML/lỗi gần nhất):"; docker logs lab-canal-adapter 2>&1 | grep -iE "DML|error|exception|Subscribe.*succeed" | tail -12
+}
+
+cmd_list(){
+  info "Nguồn CDC đã cấu hình:"
+  ls -1 "$REG_DIR"/*.conf >/dev/null 2>&1 || { warn "(chưa có — ./panel new)"; return; }
+  printf "  %-6s %-26s %-16s %-6s %s\n" "TÊN" "NGUỒN" "ĐÍCH" "slave" "BẢNG"
+  for f in "$REG_DIR"/*.conf; do ( source "$f"
+    printf "  %-6s %-26s %-16s %-6s %s\n" "$NAME" "$SRC_HOST:$SRC_PORT/$SRC_DB" "$DST_DB" "$SLAVE_ID" "$(echo $TABLES|wc -w|tr -d ' ') bảng" ); done
+}
+
+cmd_rm(){
+  local name="${1:-}"; [ -n "$name" ] || die "cú pháp: ./panel rm <name>"
+  [ -f "$REG_DIR/$name.conf" ] || die "không có '$name'"
+  rm -f "$REG_DIR/$name.conf"; rm -rf "$SRV_CONF/$name"; rm -f "$ADP_CONF/rdb/${name}_"*.yml
+  _regen_destinations; _regen_application_yml
+  ok "đã xóa '$name'. Chạy ./panel up để áp dụng"
+}
+
+# ---------- bộ sinh config ----------
+_gen_instance(){
+  local name="$1"; source "$REG_DIR/$name.conf"
+  mkdir -p "$SRV_CONF/$name"
+  local regex; regex=$(for t in $TABLES; do echo -n "$SRC_DB\\\\.$t,"; done | sed 's/,$//')
+  local tpl="$ROOT/canal-multi/templates/instance.properties.tpl"
+  [ -f "$tpl" ] || tpl="$SRV_CONF/example/instance.properties"
+  sed -E \
+    -e "s|^canal.instance.master.address *=.*|canal.instance.master.address=$SRC_HOST:$SRC_PORT|" \
+    -e "s|^canal.instance.dbUsername *=.*|canal.instance.dbUsername=$SRC_USER|" \
+    -e "s|^canal.instance.dbPassword *=.*|canal.instance.dbPassword=$SRC_PASS|" \
+    -e "s|^canal.instance.connectionCharset *=.*|canal.instance.connectionCharset=$CANAL_CS|" \
+    -e "s|^canal.instance.filter.regex *=.*|canal.instance.filter.regex=$regex|" \
+    -e "s|^#*canal.instance.mysql.slaveId *=.*|canal.instance.mysql.slaveId=$SLAVE_ID|" \
+    -e "s|^canal.instance.tsdb.enable *=.*|canal.instance.tsdb.enable=false|" \
+    "$tpl" > "$SRV_CONF/$name/instance.properties"
+  # đảm bảo có các dòng bắt buộc (append nếu template thiếu)
+  grep -qE "^canal.instance.mysql.slaveId=" "$SRV_CONF/$name/instance.properties" || echo "canal.instance.mysql.slaveId=$SLAVE_ID" >> "$SRV_CONF/$name/instance.properties"
+  grep -qE "^canal.instance.tsdb.enable=false" "$SRV_CONF/$name/instance.properties" || echo "canal.instance.tsdb.enable=false" >> "$SRV_CONF/$name/instance.properties"
+}
+
+_gen_mappings(){
+  local name="$1"; source "$REG_DIR/$name.conf"
+  mkdir -p "$ADP_CONF/rdb"
+  for t in $TABLES; do
+    local pkvar="PK_$t"; local pk="${!pkvar:-id}"
+    cat > "$ADP_CONF/rdb/${name}_${t}.yml" <<EOF
+# SINH TỰ ĐỘNG bởi panel — $name.$t -> $DST_DB.$t
+dataSourceKey: ${name}DS
+destination: $name
+groupId: g1
+outerAdapterKey: $name
+concurrent: true
+dbMapping:
+  database: $SRC_DB
+  table: $t
+  targetTable: $DST_DB.$t
+  targetPk:
+    $pk: $pk
+  mapAll: true
+EOF
+  done
+}
+
+_regen_destinations(){
+  local dests; dests=$(ls -1 "$REG_DIR"/*.conf 2>/dev/null | xargs -n1 basename 2>/dev/null | sed 's/.conf$//' | paste -sd, -)
+  [ -n "$dests" ] || dests="example"
+  sed -i.bak -E "s|^canal.destinations *=.*|canal.destinations = ${dests}|" "$SRV_CONF/canal.properties" && rm -f "$SRV_CONF/canal.properties.bak"
+}
+
+_regen_application_yml(){
+  { cat <<EOF
+# SINH TỰ ĐỘNG bởi panel — đừng sửa tay.
+server:
+  port: 8081
+canal.conf:
+  mode: tcp
+  flatMessage: true
+  syncBatchSize: 1000
+  retries: -1
+  timeout:
+  accessKey:
+  secretKey:
+  consumerProperties:
+    canal.tcp.server.host: ${CANAL_SERVER_HOST}
+    canal.tcp.zookeeper.hosts:
+    canal.tcp.batch.size: 500
+  srcDataSources:
+EOF
+    for f in "$REG_DIR"/*.conf; do [ -f "$f" ] || continue; ( source "$f"
+      echo "    ${NAME}DS:"
+      echo "      url: jdbc:mysql://$SRC_HOST:$SRC_PORT/$SRC_DB?useUnicode=true&characterEncoding=${JDBC_CS}"
+      echo "      username: $SRC_USER"; echo "      password: $SRC_PASS" ); done
+    echo "  canalAdapters:"
+    for f in "$REG_DIR"/*.conf; do [ -f "$f" ] || continue; ( source "$f"
+      cat <<EOF
+    - instance: $NAME
+      groups:
+        - groupId: g1
+          outerAdapters:
+            - name: rdb
+              key: $NAME
+              properties:
+                jdbc.driverClassName: com.mysql.jdbc.Driver
+                jdbc.url: jdbc:mysql://$DST_JDBC_HOST/$DST_DB?useUnicode=true&characterEncoding=${JDBC_CS}
+                jdbc.username: root
+                jdbc.password: $DST_ROOT_PASS
+EOF
+    ); done
+  } > "$ADP_CONF/application.yml"
+}
+
+# ---------------------------------------------------------------
+case "${1:-}" in
+  init) cmd_init ;;
+  new) cmd_new ;;
+  status) cmd_status ;;
+  up) cmd_up ;;
+  down) cmd_down ;;
+  etl) shift; cmd_etl "${1:-}" ;;
+  logs) shift; cmd_logs "${1:-}" ;;
+  list) cmd_list ;;
+  rm) shift; cmd_rm "${1:-}" ;;
+  *) cat <<EOF
+panel — CLI quản lý CDC Canal đa nguồn
+  ./panel init          check docker + kiểm tra cấu trúc
+  ./panel new           thêm 1 nguồn (hỏi tên/nguồn/đích/chọn bảng)
+  ./panel up            (re)khởi động server+adapter (dùng sau new/rm)
+  ./panel down          tắt toàn bộ
+  ./panel etl <name>    nạp data cũ cho 1 nguồn
+  ./panel status        kiểm tra sức khỏe
+  ./panel logs [name]   xem log
+  ./panel list          liệt kê nguồn
+  ./panel rm <name>     xóa 1 nguồn
+EOF
+  ;;
+esac

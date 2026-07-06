@@ -1,0 +1,115 @@
+# Canal CDC — MySQL (nguồn) → MySQL 8.0 (đích = bản sao) + canal-server/adapter/admin.
+# Công cụ đồng bộ: CANAL (Alibaba) — đọc binlog, KHÔNG trigger, KHÔNG Kafka, KHÔNG Redis.
+#
+# LƯU Ý khi lên VPS THẬT:
+#   - mysql55 ở đây chỉ là NGUỒN GIẢ để test lab. Với game thật (nguồn ở xa) -> XÓA service mysql55,
+#     và trong ./panel new nhập host nguồn thật (IP game / host ngrok/tunnel).
+#   - canal-admin (UI web, cổng 8089) là TÙY CHỌN — xóa nếu không cần (tiết kiệm ~220MB RAM).
+#   - Mac chip Apple: image amd64 chạy qua emulation (platform: linux/amd64). VPS Linux x86 thì bỏ dòng platform.
+#
+# Chạy:  ./panel init  &&  ./panel up
+
+services:
+
+  # ---------- NGUỒN: MySQL 5.5.62 (giả DB game) ----------
+  mysql55:
+    image: mysql:5.5.62
+    platform: linux/amd64
+    container_name: lab-mysql55
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: gamedb
+    command:
+      - --server-id=1
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --character-set-server=latin1
+      - --collation-server=latin1_swedish_ci
+    ports:
+      - "3355:3306"
+    volumes:
+      - mysql55_data:/var/lib/mysql
+      - ./init/mysql55:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------- ĐÍCH: MySQL 8.0 (giả bản sao ở Singapore) ----------
+  mysql80:
+    image: mysql:8.0
+    container_name: lab-mysql80
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: gamedb
+    command:
+      - --server-id=2
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=latin1
+      - --collation-server=latin1_swedish_ci
+    ports:
+      - "3380:3306"
+    volumes:
+      - mysql80_data:/var/lib/mysql
+      - ./init/mysql80:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------- CANAL SERVER: đọc binlog mysql55 (giả làm slave) ----------
+  canal-server:
+    image: canal/canal-server:v1.1.7
+    platform: linux/amd64
+    container_name: lab-canal-server
+    depends_on:
+      mysql55:
+        condition: service_healthy
+    ports:
+      - "11111:11111"
+    volumes:
+      # mount TOÀN BỘ conf (panel quản lý) — thêm nguồn KHÔNG cần sửa compose
+      - ./canal/server-conf:/home/admin/canal-server/conf
+
+  # ---------- CANAL ADAPTER: ghi thẳng vào mysql80 (KHÔNG viết code) ----------
+  canal-adapter:
+    image: slpcat/canal-adapter:v1.1.5
+    platform: linux/amd64
+    container_name: lab-canal-adapter
+    depends_on:
+      canal-server:
+        condition: service_started
+      mysql80:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./canal/adapter-conf/application.yml:/opt/canal-adapter/conf/application.yml
+      - ./canal/adapter-conf/rdb:/opt/canal-adapter/conf/rdb
+
+  # ---------- CANAL ADMIN: giao diện web quản lý (tùy chọn) ----------
+  # Lưu cấu hình trong DB riêng `canal_manager` trên mysql80 (KHÔNG đụng gamedb).
+  # Web UI: http://localhost:8089  (mặc định admin/123456)
+  canal-admin:
+    image: canal/canal-admin:v1.1.7
+    platform: linux/amd64
+    container_name: lab-canal-admin
+    depends_on:
+      mysql80:
+        condition: service_healthy
+    ports:
+      - "8089:8089"
+    environment:
+      server.port: 8089
+      spring.datasource.address: mysql80:3306
+      spring.datasource.database: canal_manager
+      spring.datasource.username: canal
+      spring.datasource.password: canal
+      canal.adminUser: admin
+      canal.adminPasswd: admin
+
+volumes:
+  mysql55_data:
+  mysql80_data:

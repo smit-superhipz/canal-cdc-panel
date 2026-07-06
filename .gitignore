@@ -1,0 +1,26 @@
+# LƯU Ý: .gitignore KHÔNG hỗ trợ comment cùng dòng — comment phải ở dòng riêng.
+
+# === BÍ MẬT — tuyệt đối không đẩy ===
+# đăng ký nguồn (chứa mật khẩu DB)
+.panel/
+# dump data game thật + mọi file .sql
+*.sql
+# trừ schema công khai (không có data thật)
+!canal-admin/canal_manager.sql
+!init/mysql55/01-schema.sql
+!init/mysql80/01-schema.sql
+!canal/base-conf/spring/tsdb/sql/create_table.sql
+
+# === SINH RA bởi panel (panel init/new tự tạo lại) ===
+canal/server-conf/
+canal/adapter-conf/
+
+# === RÁC quá trình ===
+plans/
+*.bak
+*.log
+.DS_Store
+
+# === thư mục cũ không dùng ===
+canal-multi/adapter-conf/
+canal-multi/server-conf/
