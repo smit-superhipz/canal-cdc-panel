@@ -36,7 +36,6 @@ canal-multi/templates/     # khuôn instance.properties + canal.properties (pane
 init/                      # schema MySQL mẫu (cho lab test)
 docs/
   panel-cli-guide.md       # ⭐ hướng dẫn đầy đủ panel + bug đã fix
-  canal-deploy-*.md        # hướng dẫn triển khai local -> VPS (ngrok/tunnel)
 ```
 
 ## Được sinh ra khi chạy (KHÔNG nằm trong repo — xem .gitignore)
@@ -46,7 +45,6 @@ docs/
 
 ## Tài liệu
 - **Bắt đầu ở đây:** [docs/panel-cli-guide.md](docs/panel-cli-guide.md) — mọi lệnh, quy trình, bug đã fix.
-- Triển khai local→VPS: [docs/canal-deploy-local-mysql55-to-vps-mysql80-guide.md](docs/canal-deploy-local-mysql55-to-vps-mysql80-guide.md)
 
 ## Test local (không có DB game thật)
 Dựng thêm MySQL 5.5 giả làm nguồn:
@@ -56,11 +54,9 @@ docker compose -f docker-compose.yml -f docker-compose.lab.yml up -d
 ```
 
 ## Lưu ý khi lên VPS thật
-Lab dùng mạng Docker (tên service `mysql80`, `canal-server`). VPS thật thường `network_mode: host` → sửa 2 biến đầu file `panel`:
-```bash
-CANAL_SERVER_HOST=127.0.0.1:11111
-DST_JDBC_HOST=127.0.0.1:3306
-```
+Chạy y hệt máy local: `./panel init && ./panel up`. Compose dùng mạng Docker (bridge), các container
+gọi nhau bằng tên service (`canal-server`, `mysql80`) — KHÔNG cần sửa gì trong `panel`.
+Nguồn (DB game) ở ngoài → nhập host/port khi `./panel new` (vd host/port ngrok, hoặc IP game thật).
 
 ## An toàn
 - KHÔNG commit: dump data (`*.sql`), `.panel/` (mật khẩu). Đã chặn trong `.gitignore`.

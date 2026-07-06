@@ -28,7 +28,8 @@ ADP_CONF="$ROOT/canal/adapter-conf"         # application.yml + rdb/ (sinh ra, .
 COMPOSE="$ROOT/docker-compose.yml"
 DST_CONTAINER="lab-mysql80"                 # container MySQL 8.0 (đích) + làm "máy trạm" mysql client
 DST_ROOT_PASS="root"
-# Host adapter dùng để gọi canal-server và MySQL đích (lab: tên service; VPS host-mode: 127.0.0.1)
+# Adapter gọi canal-server + MySQL đích bằng TÊN SERVICE (mạng bridge Docker) — đúng cho cả Mac lẫn VPS.
+# Chỉ override 2 biến này nếu đổi compose sang network_mode:host (khi đó dùng 127.0.0.1).
 CANAL_SERVER_HOST="${CANAL_SERVER_HOST:-canal-server:11111}"
 DST_JDBC_HOST="${DST_JDBC_HOST:-mysql80:3306}"
 
