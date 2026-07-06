@@ -17,10 +17,8 @@ Dùng để tạo **bản sao (replica)** của DB game ở nơi khác (vd panel
 git clone <repo-url> canal-cdc-panel && cd canal-cdc-panel
 ./panel init          # check docker + dựng cấu trúc conf (copy base-conf -> server-conf)
 ./panel up            # khởi động MySQL đích (mysql80) + canal-server + canal-adapter
-./panel new           # thêm 1 nguồn: nhập host/user/db, chọn bảng
-# tạo cấu trúc bảng ở đích (xem docs/panel-cli-guide.md) rồi:
-./panel up            # nạp nguồn mới
-./panel etl <tên>     # nạp data cũ 1 lần
+./panel new           # thêm 1 nguồn: nhập host/user/db, chọn bảng (tự nạp lại canal)
+./panel etl <tên>     # tự tạo bảng ở đích + đổ data cũ + bật realtime
 ./panel status        # kiểm tra đồng bộ
 ```
 

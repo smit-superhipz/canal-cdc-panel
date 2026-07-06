@@ -42,22 +42,17 @@ canal-multi/templates/        # template gốc (instance.properties, canal.prope
 | `./panel list` | Liệt kê các nguồn đã cấu hình |
 | `./panel rm <name>` | Xóa 1 nguồn |
 
-## Quy trình thêm 1 nguồn (3 bước)
+## Quy trình thêm 1 nguồn (2 bước)
 
 ```bash
-./panel new           # 1. khai báo + chọn bảng (đánh số: "1,3,5" hoặc "all")
-# 2. tạo cấu trúc bảng ở đích (panel chỉ tạo database rỗng, KHÔNG tạo bảng — xem dưới)
-./panel up            # 3. recreate server+adapter để nạp nguồn mới
-./panel etl <name>    # 4. nạp data cũ 1 lần
+./panel new           # 1. khai báo + chọn bảng (đánh số "1,3,5"/"all"). Tự nạp lại canal.
+./panel etl <name>    # 2. tự tạo khung bảng ở đích + đổ data cũ + bật realtime
 ```
 
-### Bước tạo bảng ở đích (panel cố ý KHÔNG tự làm)
-Cấu trúc bảng game phức tạp (trộn charset, nhiều cột) → tự động dễ sai. Làm tay:
-```bash
-# dump CHỈ cấu trúc (không data) từ nguồn, nạp vào database đích
-docker exec <mysql-nguồn> mysqldump -uroot -p<pass> --no-data <db_nguồn> <bảng> \
-  | docker exec -i lab-mysql80 mysql -uroot -proot <db_đích>
-```
+`panel new` tự gọi `up` ở cuối (recreate server+adapter để Canal nhận nguồn mới).
+`panel etl` tự copy khung bảng nguồn→đích trước khi đổ data:
+- chỉ tạo bảng CHƯA có ở đích (bảng đã có → giữ nguyên, không mất data)
+- dùng `mysqldump --single-transaction` (KHÔNG cần quyền LOCK TABLES trên nguồn)
 
 ## Quy trình đồng bộ ĐÚNG (2 nhịp — nhớ kỹ)
 

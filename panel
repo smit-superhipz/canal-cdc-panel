@@ -137,11 +137,10 @@ cmd_new(){
   ok "đã sinh config canal cho '$NAME'"
   docker exec "$DST_CONTAINER" mysql -uroot -p"$DST_ROOT_PASS" -e "CREATE DATABASE IF NOT EXISTS \`$DST_DB\` DEFAULT CHARSET=$SRC_CHARSET;" 2>/dev/null
   ok "database đích '$DST_DB' sẵn sàng"
+  # nạp lại canal để nhận nguồn mới (Canal không tự nhận khi đang chạy)
+  cmd_up
   echo
-  warn "BƯỚC TIẾP:"
-  echo "  1) Tạo cấu trúc bảng ở đích '$DST_DB' (dump --no-data từ nguồn rồi nạp)"
-  echo "  2) ./panel up            (recreate cả server+adapter — nạp nguồn mới)"
-  echo "  3) ./panel etl $NAME      (nạp data cũ)"
+  ok "nguồn '$NAME' đã sẵn sàng. Chạy: ${B}./panel etl $NAME${N}  (tự tạo bảng + đổ data cũ + bật realtime)"
 }
 
 # ---------------------------------------------------------------
@@ -152,9 +151,23 @@ cmd_status(){ "$ROOT/canal-healthcheck.sh"; }
 cmd_etl(){
   local name="${1:-}"; [ -n "$name" ] || die "cú pháp: ./panel etl <name>"
   [ -f "$REG_DIR/$name.conf" ] || die "không có '$name'"; source "$REG_DIR/$name.conf"
-  info "ETL nạp data cũ cho '$name' (key=$name)..."
-  # tên file mapping = <name>_<table>.yml (khớp _gen_mappings)
+
+  # 1) copy KHUNG bảng nguồn -> đích (chỉ bảng CHƯA có; --single-transaction: không cần quyền LOCK)
+  info "tạo khung bảng ở đích '$DST_DB' (bỏ qua bảng đã có)..."
+  for t in $TABLES; do
+    local exists; exists=$(mysqlq mysql80 3306 root "$DST_ROOT_PASS" "" \
+      "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA='$DST_DB' AND TABLE_NAME='$t' LIMIT 1;")
+    if [ -n "$exists" ]; then echo "  $t: đã có, giữ nguyên"; continue; fi
+    if docker exec "$DST_CONTAINER" sh -c \
+      "mysqldump -h'$SRC_HOST' -P'$SRC_PORT' -u'$SRC_USER' -p'$SRC_PASS' --no-data --skip-triggers --single-transaction --no-tablespaces --skip-column-statistics '$SRC_DB' '$t' 2>/dev/null | mysql -uroot -p'$DST_ROOT_PASS' '$DST_DB' 2>/dev/null"; then
+      echo "  $t: đã tạo khung"
+    else die "tạo khung bảng '$t' lỗi (kiểm tra quyền SELECT của '$SRC_USER' trên nguồn)"; fi
+  done
+
+  # 2) gọi Canal ETL đổ data cũ (tên file mapping = <name>_<table>.yml, khớp _gen_mappings)
+  info "đổ data cũ cho '$name' (key=$name)..."
   for t in $TABLES; do echo "  $t -> $(curl -s -X POST "http://127.0.0.1:8081/etl/rdb/$name/${name}_${t}.yml" 2>/dev/null)"; done
+  ok "xong. Realtime đã bật — thay đổi ở nguồn sẽ tự đồng bộ. Kiểm tra: ./panel status"
 }
 
 cmd_logs(){
@@ -285,10 +298,10 @@ case "${1:-}" in
   *) cat <<EOF
 panel — CLI quản lý CDC Canal đa nguồn
   ./panel init          check docker + kiểm tra cấu trúc
-  ./panel new           thêm 1 nguồn (hỏi tên/nguồn/đích/chọn bảng)
-  ./panel up            (re)khởi động server+adapter (dùng sau new/rm)
+  ./panel new           thêm 1 nguồn (hỏi tên/nguồn/đích/chọn bảng) + tự nạp lại canal
+  ./panel up            (re)khởi động mysql80+server+adapter
   ./panel down          tắt toàn bộ
-  ./panel etl <name>    nạp data cũ cho 1 nguồn
+  ./panel etl <name>    tự tạo khung bảng ở đích + đổ data cũ + bật realtime
   ./panel status        kiểm tra sức khỏe
   ./panel logs [name]   xem log
   ./panel list          liệt kê nguồn
