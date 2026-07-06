@@ -1,9 +1,13 @@
 # Canal CDC — MySQL (nguồn) → MySQL 8.0 (đích = bản sao) + canal-server/adapter/admin.
 # Công cụ đồng bộ: CANAL (Alibaba) — đọc binlog, KHÔNG trigger, KHÔNG Kafka, KHÔNG Redis.
 #
+# File này = phần CHẠY THẬT: MySQL đích (bản sao) + canal-server + canal-adapter (+ admin tùy chọn).
+# Nguồn (DB game) nằm ở NGOÀI — nhập host thật khi ./panel new.
+#
+# Muốn test local (dựng thêm MySQL 5.5 giả làm game):
+#   docker compose -f docker-compose.yml -f docker-compose.lab.yml up -d
+#
 # LƯU Ý khi lên VPS THẬT:
-#   - mysql55 ở đây chỉ là NGUỒN GIẢ để test lab. Với game thật (nguồn ở xa) -> XÓA service mysql55,
-#     và trong ./panel new nhập host nguồn thật (IP game / host ngrok/tunnel).
 #   - canal-admin (UI web, cổng 8089) là TÙY CHỌN — xóa nếu không cần (tiết kiệm ~220MB RAM).
 #   - Mac chip Apple: image amd64 chạy qua emulation (platform: linux/amd64). VPS Linux x86 thì bỏ dòng platform.
 #
@@ -11,32 +15,7 @@
 
 services:
 
-  # ---------- NGUỒN: MySQL 5.5.62 (giả DB game) ----------
-  mysql55:
-    image: mysql:5.5.62
-    platform: linux/amd64
-    container_name: lab-mysql55
-    environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: gamedb
-    command:
-      - --server-id=1
-      - --log-bin=mysql-bin
-      - --binlog-format=ROW
-      - --character-set-server=latin1
-      - --collation-server=latin1_swedish_ci
-    ports:
-      - "3355:3306"
-    volumes:
-      - mysql55_data:/var/lib/mysql
-      - ./init/mysql55:/docker-entrypoint-initdb.d
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  # ---------- ĐÍCH: MySQL 8.0 (giả bản sao ở Singapore) ----------
+  # ---------- ĐÍCH: MySQL 8.0 (bản sao đặt cạnh panel) ----------
   mysql80:
     image: mysql:8.0
     container_name: lab-mysql80
@@ -59,14 +38,11 @@ services:
       timeout: 5s
       retries: 10
 
-  # ---------- CANAL SERVER: đọc binlog mysql55 (giả làm slave) ----------
+  # ---------- CANAL SERVER: đọc binlog nguồn (giả làm slave) ----------
   canal-server:
     image: canal/canal-server:v1.1.7
     platform: linux/amd64
     container_name: lab-canal-server
-    depends_on:
-      mysql55:
-        condition: service_healthy
     ports:
       - "11111:11111"
     volumes:
@@ -111,5 +87,4 @@ services:
       canal.adminPasswd: admin
 
 volumes:
-  mysql55_data:
   mysql80_data:

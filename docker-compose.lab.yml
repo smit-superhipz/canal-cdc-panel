@@ -1,0 +1,36 @@
+# Overlay CHỈ dùng để TEST LOCAL — dựng thêm MySQL 5.5 giả làm DB game (nguồn).
+# Trên VPS thật KHÔNG dùng file này (nguồn là DB game thật ở ngoài).
+#
+# Test local:
+#   docker compose -f docker-compose.yml -f docker-compose.lab.yml up -d
+# Rồi ./panel new nhập host nguồn = mysql55, port 3306.
+
+services:
+
+  # ---------- NGUỒN GIẢ: MySQL 5.5.62 (giả DB game) ----------
+  mysql55:
+    image: mysql:5.5.62
+    platform: linux/amd64
+    container_name: lab-mysql55
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: gamedb
+    command:
+      - --server-id=1
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --character-set-server=latin1
+      - --collation-server=latin1_swedish_ci
+    ports:
+      - "3355:3306"
+    volumes:
+      - mysql55_data:/var/lib/mysql
+      - ./init/mysql55:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mysql55_data:

@@ -16,7 +16,7 @@ Dùng để tạo **bản sao (replica)** của DB game ở nơi khác (vd panel
 ```bash
 git clone <repo-url> canal-cdc-panel && cd canal-cdc-panel
 ./panel init          # check docker + dựng cấu trúc conf (copy base-conf -> server-conf)
-./panel up            # khởi động MySQL đích + canal-server + canal-adapter
+./panel up            # khởi động MySQL đích (mysql80) + canal-server + canal-adapter
 ./panel new           # thêm 1 nguồn: nhập host/user/db, chọn bảng
 # tạo cấu trúc bảng ở đích (xem docs/panel-cli-guide.md) rồi:
 ./panel up            # nạp nguồn mới
@@ -30,6 +30,7 @@ git clone <repo-url> canal-cdc-panel && cd canal-cdc-panel
 panel                      # CLI chính (9 lệnh)
 canal-healthcheck.sh       # panel status gọi cái này
 docker-compose.yml         # MySQL đích + canal-server + canal-adapter (+ admin nếu cần)
+docker-compose.lab.yml     # overlay CHỈ để test local (thêm MySQL 5.5 giả làm game)
 canal/base-conf/           # conf GỐC Canal — panel init copy sang server-conf
 canal-multi/templates/     # khuôn instance.properties + canal.properties (panel dùng sinh config)
 init/                      # schema MySQL mẫu (cho lab test)
@@ -46,6 +47,13 @@ docs/
 ## Tài liệu
 - **Bắt đầu ở đây:** [docs/panel-cli-guide.md](docs/panel-cli-guide.md) — mọi lệnh, quy trình, bug đã fix.
 - Triển khai local→VPS: [docs/canal-deploy-local-mysql55-to-vps-mysql80-guide.md](docs/canal-deploy-local-mysql55-to-vps-mysql80-guide.md)
+
+## Test local (không có DB game thật)
+Dựng thêm MySQL 5.5 giả làm nguồn:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.lab.yml up -d
+./panel new   # host nguồn = mysql55, port 3306
+```
 
 ## Lưu ý khi lên VPS thật
 Lab dùng mạng Docker (tên service `mysql80`, `canal-server`). VPS thật thường `network_mode: host` → sửa 2 biến đầu file `panel`:

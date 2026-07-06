@@ -134,7 +134,7 @@ cmd_new(){
 }
 
 # ---------------------------------------------------------------
-cmd_up(){ (cd "$ROOT" && docker compose up -d --force-recreate canal-server canal-adapter) && ok "đã (re)khởi động server+adapter"; }
+cmd_up(){ (cd "$ROOT" && docker compose up -d mysql80 && docker compose up -d --force-recreate canal-server canal-adapter) && ok "đã (re)khởi động mysql80(đích)+server+adapter"; }
 cmd_down(){ (cd "$ROOT" && docker compose down) && ok "đã tắt"; }
 cmd_status(){ "$ROOT/canal-healthcheck.sh"; }
 
