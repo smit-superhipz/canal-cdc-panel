@@ -194,3 +194,18 @@ hoặc sai mật khẩu. Sửa xong chạy lại `./panel new`.
 Nếu nguồn trộn charset ở mức cột (hiếm), báo lại để xử lý riêng.
 
 **5. Thêm/xóa nguồn xong nhớ để panel nạp lại canal.** `new` tự làm; `rm` thì chạy `./panel up` sau.
+
+**6. ETL in ra rỗng (`orders ->` không có `succeeded`) + status báo đích=0.**
+Nghĩa là canal-adapter KHÔNG khởi động được. Nguyên nhân hay gặp: có 1 nguồn cũ (vd `s1`)
+đang trỏ vào **địa chỉ ngrok đã chết** (ngrok free đổi địa chỉ mỗi lần khởi động lại).
+Adapter boot phải kết nối MỌI nguồn → 1 nguồn hỏng làm sập cả adapter → nguồn tốt cũng chết.
+Cách sửa: xóa nguồn cũ hỏng rồi tạo lại với địa chỉ ngrok mới:
+```bash
+./panel rm <tên-nguồn-cũ>
+./panel up
+./panel list          # xác nhận đã sạch
+./panel new           # tạo lại với địa chỉ ngrok hiện tại
+```
+
+**7. Nhập "database đích" — chỉ bấm Enter.** Để panel tự đặt `<db>_<tên>` (vd `shopdb_s1`).
+Đừng gõ đè tên trùng với nguồn khác, kẻo 2 nguồn ghi đè lên cùng 1 database đích.
