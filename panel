@@ -148,6 +148,18 @@ cmd_up(){ (cd "$ROOT" && docker compose up -d mysql80 && docker compose up -d --
 cmd_down(){ (cd "$ROOT" && docker compose down) && ok "đã tắt"; }
 cmd_status(){ "$ROOT/canal-healthcheck.sh"; }
 
+# đo RAM thật của các container canal + mysql đích
+cmd_ram(){
+  info "RAM đang dùng (đo thật):"
+  docker stats --no-stream --format "  {{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}" \
+    lab-canal-server lab-canal-adapter lab-mysql80 lab-canal-admin 2>/dev/null
+  # tổng canal-server + canal-adapter (MiB)
+  local tot; tot=$(docker stats --no-stream --format "{{.Name}} {{.MemUsage}}" lab-canal-server lab-canal-adapter 2>/dev/null \
+    | awk '{print $2}' | sed 's/MiB//;s/GiB/*1024/' | paste -sd+ - | bc 2>/dev/null)
+  [ -n "$tot" ] && ok "tổng canal (server+adapter) ≈ ${tot} MiB"
+  echo "  (RAM chủ yếu cố định + nhích theo SỐ NGUỒN và tốc độ thay đổi, KHÔNG theo dung lượng DB)"
+}
+
 cmd_etl(){
   local name="${1:-}"; [ -n "$name" ] || die "cú pháp: ./panel etl <name>"
   [ -f "$REG_DIR/$name.conf" ] || die "không có '$name'"; source "$REG_DIR/$name.conf"
@@ -289,6 +301,7 @@ case "${1:-}" in
   init) cmd_init ;;
   new) cmd_new ;;
   status) cmd_status ;;
+  ram) cmd_ram ;;
   up) cmd_up ;;
   down) cmd_down ;;
   etl) shift; cmd_etl "${1:-}" ;;
@@ -303,6 +316,7 @@ panel — CLI quản lý CDC Canal đa nguồn
   ./panel down          tắt toàn bộ
   ./panel etl <name>    tự tạo khung bảng ở đích + đổ data cũ + bật realtime
   ./panel status        kiểm tra sức khỏe
+  ./panel ram           đo RAM thật của canal + mysql đích
   ./panel logs [name]   xem log
   ./panel list          liệt kê nguồn
   ./panel rm <name>     xóa 1 nguồn
