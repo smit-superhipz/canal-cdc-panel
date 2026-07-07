@@ -144,7 +144,27 @@ cmd_new(){
 }
 
 # ---------------------------------------------------------------
-cmd_up(){ (cd "$ROOT" && docker compose up -d mysql80 && docker compose up -d --force-recreate canal-server canal-adapter) && ok "đã (re)khởi động mysql80(đích)+server+adapter"; }
+cmd_up(){
+  # bật MySQL đích trước (cần nó sống để ping nguồn qua nó)
+  (cd "$ROOT" && docker compose up -d mysql80) || die "không bật được mysql80"
+  # Cách B — van chặn: ping từng nguồn, CHỈ nạp nguồn còn sống (1 nguồn chết không kéo sập cả dàn)
+  if ls "$REG_DIR"/*.conf >/dev/null 2>&1; then
+    local live="" dead=""
+    for f in "$REG_DIR"/*.conf; do local nm; nm=$(basename "$f" .conf)
+      if _probe_source "$nm"; then live="$live $nm"; else dead="$dead $nm"; fi
+    done
+    live=$(echo $live); dead=$(echo $dead)
+    if [ -n "$dead" ]; then
+      warn "nguồn KHÔNG kết nối được (tạm bỏ qua): ${R}$dead${N}"
+      echo "  → sửa địa chỉ/nguồn rồi chạy lại ./panel up để nạp lại"
+    fi
+    [ -n "$live" ] && ok "nguồn sẽ nạp: $live" || warn "KHÔNG có nguồn nào sống — canal chạy rỗng"
+    # regen config chỉ với nguồn sống, rồi khởi động
+    PANEL_LIVE="$live" _regen_destinations
+    PANEL_LIVE="$live" _regen_application_yml
+  fi
+  (cd "$ROOT" && docker compose up -d --force-recreate canal-server canal-adapter) && ok "đã (re)khởi động mysql80(đích)+server+adapter"
+}
 cmd_down(){ (cd "$ROOT" && docker compose down) && ok "đã tắt"; }
 cmd_status(){ "$ROOT/canal-healthcheck.sh"; }
 
@@ -250,8 +270,21 @@ EOF
   done
 }
 
+# ping thử 1 nguồn còn kết nối được không (timeout 5s) — dùng để loại nguồn chết
+_probe_source(){ ( source "$REG_DIR/$1.conf"
+  docker exec "$DST_CONTAINER" mysql -h"$SRC_HOST" -P"$SRC_PORT" -u"$SRC_USER" -p"$SRC_PASS" --connect-timeout=5 -e "SELECT 1;" >/dev/null 2>&1 ); }
+
+# danh sách file .conf để sinh config — nếu biến PANEL_LIVE được set thì CHỈ lấy nguồn sống
+_conf_files(){
+  if [ -n "${PANEL_LIVE+x}" ]; then
+    for nm in $PANEL_LIVE; do [ -f "$REG_DIR/$nm.conf" ] && echo "$REG_DIR/$nm.conf"; done
+  else
+    ls -1 "$REG_DIR"/*.conf 2>/dev/null
+  fi
+}
+
 _regen_destinations(){
-  local dests; dests=$(ls -1 "$REG_DIR"/*.conf 2>/dev/null | xargs -n1 basename 2>/dev/null | sed 's/.conf$//' | paste -sd, -)
+  local dests; dests=$(_conf_files | xargs -n1 basename 2>/dev/null | sed 's/.conf$//' | paste -sd, -)
   [ -n "$dests" ] || dests="example"
   sed -i.bak -E "s|^canal.destinations *=.*|canal.destinations = ${dests}|" "$SRV_CONF/canal.properties" && rm -f "$SRV_CONF/canal.properties.bak"
 }
@@ -275,12 +308,12 @@ canal.conf:
     canal.tcp.batch.size: 500
   srcDataSources:
 EOF
-    for f in "$REG_DIR"/*.conf; do [ -f "$f" ] || continue; ( source "$f"
+    for f in $(_conf_files); do [ -f "$f" ] || continue; ( source "$f"
       echo "    ${NAME}DS:"
       echo "      url: jdbc:mysql://$SRC_HOST:$SRC_PORT/$SRC_DB?useUnicode=true&characterEncoding=${JDBC_CS}"
       echo "      username: $SRC_USER"; echo "      password: $SRC_PASS" ); done
     echo "  canalAdapters:"
-    for f in "$REG_DIR"/*.conf; do [ -f "$f" ] || continue; ( source "$f"
+    for f in $(_conf_files); do [ -f "$f" ] || continue; ( source "$f"
       cat <<EOF
     - instance: $NAME
       groups:

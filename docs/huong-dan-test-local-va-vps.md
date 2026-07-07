@@ -209,3 +209,8 @@ Cách sửa: xóa nguồn cũ hỏng rồi tạo lại với địa chỉ ngrok 
 
 **7. Nhập "database đích" — chỉ bấm Enter.** Để panel tự đặt `<db>_<tên>` (vd `shopdb_s1`).
 Đừng gõ đè tên trùng với nguồn khác, kẻo 2 nguồn ghi đè lên cùng 1 database đích.
+
+**8. 1 nguồn chết KHÔNG làm sập nguồn khác (van chặn).** Khi `panel up`, panel ping thử từng nguồn:
+nguồn nào không kết nối được sẽ **tạm bỏ qua** (in cảnh báo màu đỏ), các nguồn còn sống vẫn chạy bình thường.
+Khi nguồn chết sống lại (vd sửa địa chỉ ngrok), chạy lại `./panel up` — panel tự nạp lại nó.
+→ Vì vậy nên chạy `./panel up` lại mỗi khi địa chỉ ngrok đổi, hoặc sau khi 1 nguồn gặp sự cố.
