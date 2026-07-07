@@ -148,14 +148,16 @@ cmd_up(){ (cd "$ROOT" && docker compose up -d mysql80 && docker compose up -d --
 cmd_down(){ (cd "$ROOT" && docker compose down) && ok "đã tắt"; }
 cmd_status(){ "$ROOT/canal-healthcheck.sh"; }
 
-# đo RAM thật của các container canal + mysql đích
+# đo RAM thật của các container canal + mysql đích (chỉ container ĐANG chạy)
 cmd_ram(){
   info "RAM đang dùng (đo thật):"
-  docker stats --no-stream --format "  {{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}" \
-    lab-canal-server lab-canal-adapter lab-mysql80 lab-canal-admin 2>/dev/null
-  # tổng canal-server + canal-adapter (MiB)
-  local tot; tot=$(docker stats --no-stream --format "{{.Name}} {{.MemUsage}}" lab-canal-server lab-canal-adapter 2>/dev/null \
-    | awk '{print $2}' | sed 's/MiB//;s/GiB/*1024/' | paste -sd+ - | bc 2>/dev/null)
+  # chỉ lấy tên container thật sự đang chạy (khớp lab-canal* / lab-mysql*) — tránh docker stats chết câm khi tên không tồn tại
+  local names; names=$(docker ps --format "{{.Names}}" | grep -E "^lab-(canal|mysql)" || true)
+  [ -n "$names" ] || { warn "chưa có container nào chạy — chạy ./panel up trước"; return; }
+  docker stats --no-stream --format "  {{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}" $names 2>/dev/null
+  # tổng canal-server + canal-adapter, quy về MiB (dùng awk, không cần bc)
+  local tot; tot=$(docker stats --no-stream --format "{{.Name}} {{.MemUsage}}" $names 2>/dev/null \
+    | awk '/canal-(server|adapter)/{v=$2; if(v ~ /GiB/){sub(/GiB/,"",v); s+=v*1024} else {sub(/MiB/,"",v); s+=v}} END{if(s>0) printf "%.0f", s}')
   [ -n "$tot" ] && ok "tổng canal (server+adapter) ≈ ${tot} MiB"
   echo "  (RAM chủ yếu cố định + nhích theo SỐ NGUỒN và tốc độ thay đổi, KHÔNG theo dung lượng DB)"
 }
